@@ -1,6 +1,6 @@
 import type * as RDF from '@rdfjs/types';
 import { parse as parseLinkHeader } from 'http-link-header';
-import type { IDocumentLoader, JsonLdContext } from 'jsonld-context-parser';
+import type { ContextParser, IDocumentLoader, JsonLdContext } from 'jsonld-context-parser';
 import { ERROR_CODES, ErrorCoded, Util as ContextUtil } from 'jsonld-context-parser';
 import type { Readable } from 'readable-stream';
 import { PassThrough, Transform } from 'readable-stream';
@@ -727,4 +727,10 @@ export interface IJsonLdParserOptions {
    * Default to ['application/activity+json']
    */
   wellKnownMediaTypes?: string[];
+  /**
+   * An optional context parser to reuse for parsing contexts.
+   * When provided, this parser is used instead of constructing a new one per parser instance,
+   * which allows a single (optionally caching) parser to be shared across many documents.
+   */
+  contextParser?: ContextParser;
 }
