@@ -21,12 +21,19 @@ const DF = new DataFactory<RDF.BaseQuad>();
 
 /**
  * Recursively freeze an object so that any attempt to mutate it throws in strict mode.
+ * Cycle-safe: visited objects are tracked in a {@link WeakSet}, and every own-enumerable
+ * object/array child is always traversed (rather than skipped when already frozen).
  * @param node - The object to deep-freeze.
+ * @param visited - The set of already-visited nodes, used to guard against cycles.
  */
-function deepFreeze(node: Record<string, unknown>): void {
+function deepFreeze(node: Record<string, unknown>, visited: WeakSet<object> = new WeakSet()): void {
+  if (visited.has(node)) {
+    return;
+  }
+  visited.add(node);
   for (const value of Object.values(node)) {
-    if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-      deepFreeze(<Record<string, unknown>> value);
+    if (value !== null && typeof value === 'object') {
+      deepFreeze(<Record<string, unknown>> value, visited);
     }
   }
   Object.freeze(node);
