@@ -64,6 +64,9 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
   private lastKeys: any[];
   // A promise representing the last job
   private lastOnValueJob: Promise<void>;
+  // Whether the last job (and thereby the whole chain) has settled,
+  // in which case a new job can be started synchronously instead of being chained.
+  private lastOnValueJobSettled: boolean;
 
   public constructor(options?: IJsonLdParserOptions) {
     super({ readableObjectMode: true });
@@ -81,6 +84,7 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
     this.lastDepth = 0;
     this.lastKeys = [];
     this.lastOnValueJob = Promise.resolve();
+    this.lastOnValueJobSettled = true;
 
     this.attachJsonParserListeners();
 
@@ -226,11 +230,15 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
 
       // Flush the buffer for lastDepth
       // If the parent key is a special type of container, postpone flushing until that parent is handled.
-      if (await EntryHandlerContainer.isBufferableContainerHandler(
+      let bufferableContainerHandler = EntryHandlerContainer.isBufferableContainerHandler(
         this.parsingContext,
         this.lastKeys,
         this.lastDepth,
-      )) {
+      );
+      if (Util.isPromise(bufferableContainerHandler)) {
+        bufferableContainerHandler = await bufferableContainerHandler;
+      }
+      if (bufferableContainerHandler) {
         this.parsingContext.pendingContainerFlushBuffers
           .push({ depth: this.lastDepth, keys: this.lastKeys.slice(0, this.lastKeys.length) });
         flushStacks = false;
@@ -240,9 +248,17 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
     }
 
     // eslint-disable-next-line ts/no-unsafe-assignment, ts/no-unsafe-argument
-    const key = await this.util.unaliasKeyword(keys[depth], keys, depth);
+    let key = this.util.unaliasKeywordFast(keys[depth], keys, depth);
+    if (Util.isPromise(key)) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      key = await key;
+    }
     // eslint-disable-next-line ts/no-unsafe-assignment
-    const parentKey = await this.util.unaliasKeywordParent(keys, depth);
+    let parentKey = this.util.unaliasKeywordParentFast(keys, depth);
+    if (Util.isPromise(parentKey)) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      parentKey = await parentKey;
+    }
     this.parsingContext.emittedStack[depth] = true;
     let handleKey = true;
 
@@ -258,8 +274,14 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
       inProperty = this.parsingContext.validationStack.at(-1)!.property;
     }
     for (let i = Math.max(1, this.parsingContext.validationStack.length - 1); i < keys.length - 1; i++) {
-      const validationResult = this.parsingContext.validationStack[i] ||
-        (this.parsingContext.validationStack[i] = await this.validateKey(keys.slice(0, i + 1), i, inProperty));
+      let validationResult = this.parsingContext.validationStack[i];
+      if (!validationResult) {
+        let validationResultNew = this.validateKey(keys.slice(0, i + 1), i, inProperty);
+        if (Util.isPromise(validationResultNew)) {
+          validationResultNew = await validationResultNew;
+        }
+        validationResult = this.parsingContext.validationStack[i] = validationResultNew;
+      }
       if (!validationResult.valid) {
         this.parsingContext.emittedStack[depth] = false;
         handleKey = false;
@@ -270,7 +292,11 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
     }
 
     // Skip further processing if this node is part of a literal
-    if (await this.util.isLiteral(keys, depth)) {
+    let literal = this.util.isLiteralFast(keys, depth);
+    if (Util.isPromise(literal)) {
+      literal = await literal;
+    }
+    if (literal) {
       handleKey = false;
     }
 
@@ -278,7 +304,11 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
     if (handleKey) {
       for (const entryHandler of JsonLdParser.ENTRY_HANDLERS) {
         // eslint-disable-next-line ts/no-unsafe-assignment
-        const testResult = await entryHandler.test(this.parsingContext, this.util, key, keys, depth);
+        let testResult = entryHandler.test(this.parsingContext, this.util, key, keys, depth);
+        if (Util.isPromise(testResult)) {
+          // eslint-disable-next-line ts/no-unsafe-assignment
+          testResult = await testResult;
+        }
         if (testResult) {
           // Pass processing over to the handler
           await entryHandler.handle(this.parsingContext, this.util, key, keys, value, depth, testResult);
@@ -442,19 +472,55 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
 
   /**
    * Check if at least one {@link IEntryHandler} validates the entry to true.
+   *
+   * The result is returned directly (not wrapped in a Promise)
+   * whenever it can be determined synchronously,
+   * and a Promise is only returned when a handler requires asynchronous work.
+   *
    * @param {any[]} keys A stack of keys.
    * @param {number} depth A depth.
    * @param {boolean} inProperty If the current depth is part of a valid property node.
-   * @return {Promise<{ valid: boolean, property: boolean }>} A promise resolving to true or false.
+   * @return {{ valid: boolean, property: boolean } | Promise<{ valid: boolean, property: boolean }>}
+   *         The validation result, possibly wrapped in a promise.
    */
-  protected async validateKey(
+  protected validateKey(
+    keys: any[],
+    depth: number,
+    inProperty: boolean,
+  ): { valid: boolean; property: boolean } | Promise<{ valid: boolean; property: boolean }> {
+    const entryHandlers = JsonLdParser.ENTRY_HANDLERS;
+    // eslint-disable-next-line unicorn/no-for-loop
+    for (let i = 0; i < entryHandlers.length; i++) {
+      const validationResult = entryHandlers[i].validate(this.parsingContext, this.util, keys, depth, inProperty);
+      if (Util.isPromise(validationResult)) {
+        // Continue asynchronously from the current handler.
+        return this.validateKeyAsyncFrom(validationResult, i, keys, depth, inProperty);
+      }
+      if (validationResult) {
+        return { valid: true, property: inProperty || entryHandlers[i].isPropertyHandler() };
+      }
+    }
+    return { valid: false, property: false };
+  }
+
+  /**
+   * The asynchronous continuation of {@link JsonLdParser#validateKey},
+   * starting at handler `index` for which the pending validation result is given.
+   */
+  protected async validateKeyAsyncFrom(
+    pendingValidationResult: Promise<boolean>,
+    index: number,
     keys: any[],
     depth: number,
     inProperty: boolean,
   ): Promise<{ valid: boolean; property: boolean }> {
-    for (const entryHandler of JsonLdParser.ENTRY_HANDLERS) {
-      if (await entryHandler.validate(this.parsingContext, this.util, keys, depth, inProperty)) {
-        return { valid: true, property: inProperty || entryHandler.isPropertyHandler() };
+    const entryHandlers = JsonLdParser.ENTRY_HANDLERS;
+    if (await pendingValidationResult) {
+      return { valid: true, property: inProperty || entryHandlers[index].isPropertyHandler() };
+    }
+    for (let i = index + 1; i < entryHandlers.length; i++) {
+      if (await entryHandlers[i].validate(this.parsingContext, this.util, keys, depth, inProperty)) {
+        return { valid: true, property: inProperty || entryHandlers[i].isPropertyHandler() };
       }
     }
     return { valid: false, property: false };
@@ -471,18 +537,26 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
       // eslint-disable-next-line ts/no-unsafe-assignment
       const depth = this.jsonParser.stack.length;
       // Don't parse inner nodes inside @context
+      // Build the keys stack by filling a single preallocated array with a plain loop, avoiding
+      // the per-value closure that `Array.from(..., mapFn)` would allocate on every emitted value.
       // eslint-disable-next-line ts/no-unsafe-assignment
-      const keys = Array.from({ length: depth + 1 }, (v, i) =>
-        // eslint-disable-next-line ts/no-unsafe-return
-        i === depth ? this.jsonParser.key : this.jsonParser.stack[i].key);
+      const keys: any[] = Array.from({ length: depth + 1 });
+      for (let i = 0; i < depth; i++) {
+        // eslint-disable-next-line ts/no-unsafe-assignment
+        keys[i] = this.jsonParser.stack[i].key;
+      }
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      keys[depth] = this.jsonParser.key;
 
       // eslint-disable-next-line ts/no-unsafe-argument
       if (!this.isParsingContextInner(depth)) {
         // eslint-disable-next-line ts/no-unsafe-argument
         const valueJobCb = (): Promise<void> => this.newOnValueJob(keys, value, depth, true);
         if (!this.parsingContext.streamingProfile &&
+          // Synchronous presence check over keys.slice(0, -1); avoids allocating a slice + Promise
+          // just to test for the existence of a context (see ContextTree#hasContext).
           // eslint-disable-next-line ts/no-unsafe-argument
-          !this.parsingContext.contextTree.getContext(keys.slice(0, -1))) {
+          !this.parsingContext.contextTree.hasContext(keys, 0, depth)) {
           // If an out-of-order context is allowed,
           // we have to buffer everything.
           // We store jobs for @context's and @type's separately,
@@ -500,19 +574,55 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
           }
         } else {
           // Make sure that our value jobs are chained synchronously
-          this.lastOnValueJob = this.lastOnValueJob.then(valueJobCb);
+          this.enqueueValueJob(valueJobCb);
         }
 
         // Execute all buffered jobs on deeper levels
         if (!this.parsingContext.streamingProfile && depth === 0) {
-          this.lastOnValueJob = this.lastOnValueJob
-            .then(() => this.executeBufferedJobs());
+          this.enqueueValueJob(() => this.executeBufferedJobs());
         }
       }
     };
     this.jsonParser.onError = (error: Error) => {
       this.emit('error', error);
     };
+  }
+
+  /**
+   * Append the given job to the value job chain.
+   *
+   * If the previous job chain has fully settled, the new job is started immediately:
+   * this executes all of its synchronously-completable work inline,
+   * instead of unconditionally deferring it to a later microtask
+   * (and paying the extra promise-adoption microtasks of `.then(job)`).
+   *
+   * Jobs are still guaranteed to execute strictly sequentially,
+   * and a rejected job still causes all later chained jobs to be skipped,
+   * with the rejection being reported through {@link JsonLdParser#lastOnValueJob}.
+   *
+   * @param job A callback producing the job promise.
+   */
+  protected enqueueValueJob(job: () => Promise<void>): void {
+    if (this.lastOnValueJobSettled) {
+      this.lastOnValueJobSettled = false;
+      this.lastOnValueJob = job();
+    } else {
+      this.lastOnValueJob = this.lastOnValueJob.then(job);
+    }
+    const jobPromise = this.lastOnValueJob;
+    jobPromise.then(() => {
+      // Only mark the chain as settled if no further job was appended in the meantime.
+      if (this.lastOnValueJob === jobPromise) {
+        this.lastOnValueJobSettled = true;
+      }
+    }, () => {
+      // Deliberately keep the chain unsettled on failure:
+      // later jobs must chain onto the rejected promise (and thereby be skipped),
+      // exactly as they would without the settled-tracking fast path.
+      // The rejection itself is reported through `lastOnValueJob` (see `_transform`),
+      // this handler only prevents the settled-tracking promise
+      // from being reported as an unhandled rejection.
+    });
   }
 
   /**
@@ -550,14 +660,27 @@ export class JsonLdParser extends Transform implements RDF.Sink<EventEmitter, RD
 
     for (const job of this.contextAwaitingJobs) {
       // Also capture @type with array values
-      if ((await this.util.unaliasKeyword(job.keys[job.depth], job.keys, job.depth, true)) === '@type' ||
-        (typeof job.keys[job.depth] === 'number' &&
-          (await this.util.unaliasKeyword(
-            job.keys[job.depth - 1],
-            job.keys,
-            job.depth - 1,
-            true,
-          )) === '@type')) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      let jobKey = this.util.unaliasKeywordFast(job.keys[job.depth], job.keys, job.depth, true);
+      if (Util.isPromise(jobKey)) {
+        // eslint-disable-next-line ts/no-unsafe-assignment
+        jobKey = await jobKey;
+      }
+      let jobParentKey: any;
+      if (jobKey !== '@type' && typeof job.keys[job.depth] === 'number') {
+        // eslint-disable-next-line ts/no-unsafe-assignment
+        jobParentKey = this.util.unaliasKeywordFast(
+          job.keys[job.depth - 1],
+          job.keys,
+          job.depth - 1,
+          true,
+        );
+        if (Util.isPromise(jobParentKey)) {
+          // eslint-disable-next-line ts/no-unsafe-assignment
+          jobParentKey = await jobParentKey;
+        }
+      }
+      if (jobKey === '@type' || jobParentKey === '@type') {
         // Remove @type from keys, because we want it to apply to parent later on
         this.typeJobs.push({ job: job.job, keys: job.keys.slice(0, -1) });
       } else {

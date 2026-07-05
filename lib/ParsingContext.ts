@@ -101,6 +101,9 @@ export class ParsingContext {
   public activeProcessingMode: number;
 
   private readonly parser: JsonLdParser;
+  // The resolved root context, once (and only when) it is known.
+  // This enables the synchronous context lookup fast path.
+  private rootContextResolved: JsonLdContextNormalized | null = null;
 
   public constructor(options: IParsingContextOptions) {
     // Initialize settings
@@ -149,10 +152,19 @@ export class ParsingContext {
       this.rootContext = this.parseContext(options.context, undefined, undefined, true);
       // eslint-disable-next-line ts/no-floating-promises
       void this.rootContext.then(context => this.validateContext(context));
+      // Cache the resolved root context for the synchronous lookup fast path.
+      // Rejections are left to be handled by whoever awaits `rootContext`.
+      this.rootContext.then((context) => {
+        this.rootContextResolved = context;
+      }, () => {
+        // Ignored: the consumer of the root context promise is responsible for error handling.
+      });
     } else {
-      this.rootContext = Promise.resolve(new JsonLdContextNormalized(
+      const rootContext = new JsonLdContextNormalized(
         this.baseIRI ? { '@base': this.baseIRI, '@__baseDocument': true } : {},
-      ));
+      );
+      this.rootContext = Promise.resolve(rootContext);
+      this.rootContextResolved = rootContext;
     }
   }
 
@@ -202,31 +214,95 @@ export class ParsingContext {
   }
 
   /**
+   * Compute the exclusive upper bound within `keys` that {@link ParsingContext#getContext}
+   * uses for its context lookup: trailing array (number) keys are ignored,
+   * and the given offset is subtracted.
+   * This replaces the `keys.slice()` calls that would otherwise be needed on a very hot path.
+   * @param {keys} keys The path of keys.
+   * @param {number} offset The path offset.
+   * @return {number} The exclusive upper bound within `keys` for the context lookup.
+   */
+  private static getContextLookupEnd(keys: any[], offset: number): number {
+    let end = keys.length;
+
+    // Ignore array keys at the end
+    while (typeof keys[end - 1] === 'number') {
+      end--;
+    }
+
+    // Handle offset on keys
+    return Math.max(end - offset, 0);
+  }
+
+  /**
+   * Synchronously get the context at the given path, if it can be determined
+   * without asynchronous work.
+   *
+   * This mirrors {@link ParsingContext#getContext} for the common case in which
+   * the applicable context has already been resolved and no property-scoped context
+   * (which requires an asynchronous context parse) applies.
+   *
+   * @param {keys} keys The path of keys to get the context at.
+   * @param {number} offset The path offset, defaults to 1.
+   * @return {JsonLdContextNormalized | null} The context,
+   *         or null if it can not be determined synchronously
+   *         (in which case {@link ParsingContext#getContext} must be used).
+   */
+  public tryGetContext(keys: any[], offset = 1): JsonLdContextNormalized | null {
+    const end = ParsingContext.getContextLookupEnd(keys, offset);
+
+    // Determine the closest context
+    const contextData = this.tryGetContextPropagationAware(keys, end);
+    if (!contextData) {
+      return null;
+    }
+
+    // Property-scoped contexts require an asynchronous context parse,
+    // so their presence sends us to the asynchronous path.
+    // This scan mirrors the property-scoped context loop in {@link ParsingContext#getContext}:
+    // since that loop only modifies the context after finding a first applicable
+    // property-scoped context, bailing out on the first hit is equivalent.
+    const contextRaw: IJsonLdContextNormalizedRaw = contextData.context.getContextRaw();
+    for (let i = contextData.depth; i < keys.length - offset; i++) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      const key = keys[i];
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      const contextKeyEntry = contextRaw[key];
+      if (contextKeyEntry && typeof contextKeyEntry === 'object' && '@context' in contextKeyEntry) {
+        return null;
+      }
+    }
+
+    return contextData.context;
+  }
+
+  /**
    * Get the context at the given path.
    * @param {keys} keys The path of keys to get the context at.
    * @param {number} offset The path offset, defaults to 1.
    * @return {Promise<JsonLdContextNormalized>} A promise resolving to a context.
    */
   public async getContext(keys: any[], offset = 1): Promise<JsonLdContextNormalized> {
+    // Fast path: the common case can be answered synchronously.
+    const contextSync = this.tryGetContext(keys, offset);
+    if (contextSync) {
+      return contextSync;
+    }
+
     const keysOriginal = keys;
-
-    // Ignore array keys at the end
-    while (typeof keys.at(-1) === 'number') {
-      keys = keys.slice(0, -1);
-    }
-
-    // Handle offset on keys
-    if (offset) {
-      keys = keys.slice(0, -offset);
-    }
+    const end = ParsingContext.getContextLookupEnd(keys, offset);
 
     // Determine the closest context
     // eslint-disable-next-line ts/no-unsafe-argument
-    const contextData = await this.getContextPropagationAware(keys);
+    const contextData = await this.getContextPropagationAware(keys, end);
     const context: JsonLdContextNormalized = contextData.context;
 
     // Process property-scoped contexts (high-to-low)
     let contextRaw: IJsonLdContextNormalizedRaw = context.getContextRaw();
+    // Track whether the loop below actually reassigned `contextRaw` to a different raw object.
+    // In the common path it never does, so we can return the existing `context` (which already
+    // wraps this exact raw object) instead of allocating a redundant JsonLdContextNormalized wrapper.
+    let modified = false;
     for (let i = contextData.depth; i < keysOriginal.length - offset; i++) {
       // eslint-disable-next-line ts/no-unsafe-assignment
       const key = keysOriginal[i];
@@ -242,6 +318,7 @@ export class ParsingContext {
 
         if (propagate !== false || i === keysOriginal.length - 1 - offset) {
           contextRaw = { ...scopedContext };
+          modified = true;
 
           // Clean up final context
           delete contextRaw['@propagate'];
@@ -263,7 +340,58 @@ export class ParsingContext {
       }
     }
 
-    return new JsonLdContextNormalized(contextRaw);
+    return modified ? new JsonLdContextNormalized(contextRaw) : context;
+  }
+
+  /**
+   * Synchronously get the context at the given path in a propagation-aware manner,
+   * if it can be determined without asynchronous work.
+   *
+   * This mirrors the common (single-iteration) case of
+   * {@link ParsingContext#getContextPropagationAware}:
+   * the rare propagation-sensitive cases (non-propagating contexts and propagation fallbacks)
+   * are delegated to the asynchronous path by returning null.
+   *
+   * @param keys The path of keys to get the context at.
+   * @param end The exclusive upper bound within `keys` for the lookup.
+   * @return {{ context: JsonLdContextNormalized, depth: number } | null} A context and its depth,
+   *         or null if they can not be determined synchronously.
+   */
+  public tryGetContextPropagationAware(keys: any[], end: number):
+  { context: JsonLdContextNormalized; depth: number } | null {
+    // eslint-disable-next-line ts/no-unsafe-argument
+    const entry = this.contextTree.lookup(keys, 0, end);
+    let context: JsonLdContextNormalized;
+    let depth: number;
+    if (entry) {
+      if (!entry.resolved) {
+        // The applicable context is still being parsed: go through the asynchronous path.
+        return null;
+      }
+      context = entry.resolved;
+      depth = entry.depth;
+    } else {
+      if (!this.rootContextResolved) {
+        // The root context is still being parsed: go through the asynchronous path.
+        return null;
+      }
+      context = this.rootContextResolved;
+      depth = 0;
+    }
+
+    if (context.getContextRaw()['@propagate'] === false && depth !== end) {
+      if (depth > 0) {
+        // Non-propagating contexts require the full iterative logic
+        // of {@link ParsingContext#getContextPropagationAware}.
+        return null;
+      }
+
+      // Special case for root context that does not allow propagation.
+      // Fallback to empty context in that case.
+      return { context: new JsonLdContextNormalized({}), depth };
+    }
+
+    return { context, depth };
   }
 
   /**
@@ -276,11 +404,13 @@ export class ParsingContext {
    * call {@link #getContext} instead.
    *
    * @param keys The path of keys to get the context at.
+   * @param end The exclusive upper bound within `keys` for the lookup, defaults to `keys.length`.
+   *            This avoids `keys.slice()` allocations on a hot path.
    * @return {Promise<{ context: JsonLdContextNormalized, depth: number }>} A context and its depth.
    */
-  public async getContextPropagationAware(keys: string[]):
+  public async getContextPropagationAware(keys: string[], end: number = keys.length):
   Promise<{ context: JsonLdContextNormalized; depth: number }> {
-    const originalDepth = keys.length;
+    const originalDepth = end;
     let contextData: { context: JsonLdContextNormalized; depth: number } | null = null;
     let hasApplicablePropertyScopedContext: boolean;
     do {
@@ -295,16 +425,19 @@ export class ParsingContext {
           // If we had a previous iteration, jump to the parent of context depth.
           // We must do this because once we get here, last context had propagation disabled,
           // so we check its first parent instead.
-          keys = keys.slice(0, contextData.depth - 1);
+          end = contextData.depth - 1;
         }
 
-        contextData = await this.contextTree.getContext(keys) ?? { context: await this.rootContext, depth: 0 };
+        const entry = this.contextTree.lookup(keys, 0, end);
+        contextData = entry ?
+            { context: entry.resolved ?? await entry.context, depth: entry.depth } :
+            { context: await this.rootContext, depth: 0 };
       }
 
       // Allow non-propagating contexts to propagate one level deeper
       // if it defines a property-scoped context that is applicable for the current key.
       // @see https://w3c.github.io/json-ld-api/tests/toRdf-manifest#tc012
-      const lastKey = keys.at(-1);
+      const lastKey = end >= 1 ? keys[end - 1] : undefined;
       if (lastKey !== undefined && lastKey in contextData.context.getContextRaw()) {
         // eslint-disable-next-line ts/no-unsafe-assignment
         const lastKeyValue = contextData.context.getContextRaw()[lastKey];

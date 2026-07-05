@@ -1,6 +1,6 @@
 import { ERROR_CODES, ErrorCoded, Util as ContextUtil } from 'jsonld-context-parser';
 import type { ParsingContext } from '../../ParsingContext';
-import type { Util } from '../../Util';
+import { Util } from '../../Util';
 import type { IEntryHandler } from '../IEntryHandler';
 
 /**
@@ -24,15 +24,26 @@ export class EntryHandlerKeywordUnknownFallback implements IEntryHandler<boolean
     return true;
   }
 
-  public async validate(
+  public validate(
     parsingContext: ParsingContext,
     util: Util,
     keys: any[],
     depth: number,
     inProperty: boolean,
-  ): Promise<boolean> {
+  ): boolean | Promise<boolean> {
     // eslint-disable-next-line ts/no-unsafe-assignment
-    const key = await util.unaliasKeyword(<string>keys[depth], <string[]>keys, depth);
+    const key = util.unaliasKeywordFast(<string>keys[depth], <string[]>keys, depth);
+    if (Util.isPromise(key)) {
+      return key.then(resolvedKey =>
+        EntryHandlerKeywordUnknownFallback.validateWithKey(<string>resolvedKey, inProperty));
+    }
+    return EntryHandlerKeywordUnknownFallback.validateWithKey(<string>key, inProperty);
+  }
+
+  /**
+   * The synchronous tail of {@link EntryHandlerKeywordUnknownFallback#validate}.
+   */
+  private static validateWithKey(key: string, inProperty: boolean): boolean {
     if (ContextUtil.isPotentialKeyword(key)) {
       // Don't emit anything inside free-floating lists
       if (!inProperty && key === '@list') {
@@ -44,13 +55,13 @@ export class EntryHandlerKeywordUnknownFallback implements IEntryHandler<boolean
     return false;
   }
 
-  public async test(
+  public test(
     _parsingContext: ParsingContext,
     _util: Util,
     key: any,
     _keys: any[],
     _depth: number,
-  ): Promise<boolean> {
+  ): boolean {
     return ContextUtil.isPotentialKeyword(key);
   }
 

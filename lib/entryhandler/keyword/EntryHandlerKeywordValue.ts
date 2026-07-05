@@ -1,5 +1,5 @@
 import type { ParsingContext } from '../../ParsingContext';
-import type { Util } from '../../Util';
+import { Util } from '../../Util';
 import { EntryHandlerKeyword } from './EntryHandlerKeyword';
 
 /**
@@ -10,31 +10,47 @@ export class EntryHandlerKeywordValue extends EntryHandlerKeyword {
     super('@value');
   }
 
-  public async validate(
+  public validate(
     parsingContext: ParsingContext,
     util: Util,
     keys: any[],
     depth: number,
     inProperty: boolean,
-  ): Promise<boolean> {
+  ): boolean | Promise<boolean> {
     // If this is @value, mark it so in the stack so that no deeper handling of nodes occurs.
     // eslint-disable-next-line ts/no-unsafe-assignment
     const key = keys[depth];
-    if (key && !parsingContext.literalStack[depth] && await this.test(parsingContext, util, key, keys, depth)) {
-      parsingContext.literalStack[depth] = true;
+    if (key && !parsingContext.literalStack[depth]) {
+      const testResult = this.test(parsingContext, util, key, keys, depth);
+      if (Util.isPromise(testResult)) {
+        return testResult.then((testResultValue) => {
+          if (testResultValue) {
+            parsingContext.literalStack[depth] = true;
+          }
+          return super.validate(parsingContext, util, keys, depth, inProperty);
+        });
+      }
+      if (testResult) {
+        parsingContext.literalStack[depth] = true;
+      }
     }
 
     return super.validate(parsingContext, util, keys, depth, inProperty);
   }
 
-  public async test(
+  public test(
     parsingContext: ParsingContext,
     util: Util,
     _key: any,
     keys: any[],
     depth: number,
-  ): Promise<boolean> {
-    return await util.unaliasKeyword(<string>keys[depth], <string[]>keys.slice(0, -1), depth - 1, true) === '@value';
+  ): boolean | Promise<boolean> {
+    // eslint-disable-next-line ts/no-unsafe-assignment
+    const unaliased = util.unaliasKeywordFast(<string>keys[depth], <string[]>keys.slice(0, -1), depth - 1, true);
+    if (Util.isPromise(unaliased)) {
+      return unaliased.then(unaliasedValue => unaliasedValue === '@value');
+    }
+    return unaliased === '@value';
   }
 
   public async handle(

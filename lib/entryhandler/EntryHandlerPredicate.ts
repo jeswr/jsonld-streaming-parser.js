@@ -1,4 +1,5 @@
 import type * as RDF from '@rdfjs/types';
+import type { JsonLdContextNormalized } from 'jsonld-context-parser';
 import { ERROR_CODES, ErrorCoded } from 'jsonld-context-parser';
 import type { AnnotationsBufferEntry, ParsingContext } from '../ParsingContext';
 import { Util } from '../Util';
@@ -35,7 +36,7 @@ export class EntryHandlerPredicate implements IEntryHandler<boolean> {
     isAnnotation: boolean,
   ): Promise<void> {
     const depthProperties: number = await util.getPropertiesDepth(keys, depth);
-    const depthOffsetGraph = await util.getDepthOffsetGraph(depth, keys);
+    const depthOffsetGraph: number = await util.getDepthOffsetGraph(depth, keys);
     const depthPropertiesGraph: number = depth - depthOffsetGraph;
 
     const subjects = parsingContext.idStack[depthProperties];
@@ -128,38 +129,54 @@ export class EntryHandlerPredicate implements IEntryHandler<boolean> {
     return true;
   }
 
-  public async validate(
+  public validate(
     parsingContext: ParsingContext,
     util: Util,
     keys: any[],
     depth: number,
     _inProperty: boolean,
-  ): Promise<boolean> {
+  ): boolean | Promise<boolean> {
     // eslint-disable-next-line ts/no-unsafe-assignment
     const key = keys[depth];
     if (key) {
-      const context = await parsingContext.getContext(keys);
-
-      // eslint-disable-next-line ts/await-thenable
-      if (!parsingContext.jsonLiteralStack[depth] && await util.predicateToTerm(context, <string>keys[depth])) {
-        // If this valid predicate is of type @json, mark it so in the stack so that no deeper handling of nodes occurs.
-
-        if (Util.getContextValueType(context, <string>key) === '@json') {
-          parsingContext.jsonLiteralStack[depth + 1] = true;
-        }
-        return true;
+      const contextSync = parsingContext.tryGetContext(keys);
+      if (!contextSync) {
+        return parsingContext.getContext(keys)
+          .then(context => EntryHandlerPredicate.validateWithContext(parsingContext, util, context, keys, depth));
       }
+      return EntryHandlerPredicate.validateWithContext(parsingContext, util, contextSync, keys, depth);
     }
     return false;
   }
 
-  public async test(
+  /**
+   * The synchronous tail of {@link EntryHandlerPredicate#validate}.
+   */
+  private static validateWithContext(
+    parsingContext: ParsingContext,
+    util: Util,
+    context: JsonLdContextNormalized,
+    keys: any[],
+    depth: number,
+  ): boolean {
+    if (!parsingContext.jsonLiteralStack[depth] && util.predicateToTerm(context, <string>keys[depth])) {
+      // If this valid predicate is of type @json, mark it so in the stack so that no deeper handling of nodes occurs.
+
+      if (Util.getContextValueType(context, <string>keys[depth]) === '@json') {
+        parsingContext.jsonLiteralStack[depth + 1] = true;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  public test(
     _parsingContext: ParsingContext,
     _util: Util,
     _key: any,
     keys: any[],
     depth: number,
-  ): Promise<boolean> {
+  ): boolean {
     // eslint-disable-next-line ts/no-unsafe-return
     return keys[depth];
   }
@@ -175,17 +192,20 @@ export class EntryHandlerPredicate implements IEntryHandler<boolean> {
   ): Promise<any> {
     // eslint-disable-next-line ts/no-unsafe-assignment
     const keyOriginal = keys[depth];
-    const context = await parsingContext.getContext(keys);
+    const context = parsingContext.tryGetContext(keys) ?? await parsingContext.getContext(keys);
 
-    // eslint-disable-next-line ts/await-thenable
-    const predicate = await util.predicateToTerm(context, <string>key);
+    const predicate = util.predicateToTerm(context, <string>key);
     if (predicate) {
       const objects = await util.valueToTerm(context, <string>key, value, depth, <string[]>keys);
       if (objects.length > 0) {
         for (let object of objects) {
           // Based on parent key, check if reverse, embedded, and annotation.
           // eslint-disable-next-line ts/no-unsafe-assignment
-          let parentKey = await util.unaliasKeywordParent(<string[]>keys, depth);
+          let parentKey = util.unaliasKeywordParentFast(<string[]>keys, depth);
+          if (Util.isPromise(parentKey)) {
+            // eslint-disable-next-line ts/no-unsafe-assignment
+            parentKey = await parentKey;
+          }
 
           const reverse = Util.isPropertyReverse(context, <string>keyOriginal, <string>parentKey);
           let parentDepthOffset = 0;
@@ -197,7 +217,11 @@ export class EntryHandlerPredicate implements IEntryHandler<boolean> {
               depth--;
             }
             // eslint-disable-next-line ts/no-unsafe-assignment
-            parentKey = await util.unaliasKeywordParent(<string[]>keys, depth - parentDepthOffset);
+            parentKey = util.unaliasKeywordParentFast(<string[]>keys, depth - parentDepthOffset);
+            if (Util.isPromise(parentKey)) {
+              // eslint-disable-next-line ts/no-unsafe-assignment
+              parentKey = await parentKey;
+            }
           }
 
           const isEmbedded = Util.isPropertyInEmbeddedNode(<string>parentKey);

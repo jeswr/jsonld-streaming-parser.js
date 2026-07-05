@@ -27,7 +27,11 @@ export interface IEntryHandler<T> {
    * @param {any[]} keys A stack of keys.
    * @param {number} depth The current depth.
    * @param {boolean} inProperty If the current depth is part of a valid property node.
-   * @return {Promise<boolean>} A promise resolving to a boolean representing if the key is valid.
+   * @return {boolean | Promise<boolean>} A boolean representing if the key is valid,
+   *                                      possibly wrapped in a promise.
+   *                                      Implementations SHOULD return the boolean directly
+   *                                      when it can be determined synchronously,
+   *                                      as this avoids Promise overhead on a hot path.
    */
   validate: (
     parsingContext: ParsingContext,
@@ -35,7 +39,7 @@ export interface IEntryHandler<T> {
     keys: any[],
     depth: number,
     inProperty: boolean,
-  ) => Promise<boolean>;
+  ) => boolean | Promise<boolean>;
 
   /**
    * Check if this handler can handle the given key.
@@ -45,10 +49,20 @@ export interface IEntryHandler<T> {
    * @param key The current (unaliased) key.
    * @param {any[]} keys A stack of keys.
    * @param {number} depth The current depth.
-   * @return {Promise<T | null>} A promise resolving to a truthy value if it can handle.
+   * @return {T | null | Promise<T | null>} A truthy value if it can handle, possibly wrapped
+   *                             in a promise.
    *                             (this value will be passed into {@link IEntryHandler#handle})
+   *                             Implementations SHOULD return the value directly
+   *                             when it can be determined synchronously,
+   *                             as this avoids Promise overhead on a hot path.
    */
-  test: (parsingContext: ParsingContext, util: Util, key: any, keys: any[], depth: number) => Promise<T | null>;
+  test: (
+    parsingContext: ParsingContext,
+    util: Util,
+    key: any,
+    keys: any[],
+    depth: number,
+  ) => T | null | Promise<T | null>;
 
   /**
    * Handle the given entry.
