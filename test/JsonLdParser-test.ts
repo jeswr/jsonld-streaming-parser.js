@@ -140,16 +140,12 @@ describe('JsonLdParser', () => {
         .toThrow(new ErrorCoded(`Missing context link header for media type text/turtle+json on BASE`, ERROR_CODES.LOADING_DOCUMENT_FAILED));
     });
 
-    // eslint-disable-next-line max-len
-    // eslint-disable-next-line max-len
     it('should handle a plain JSON response without link header when ignoreMissingContextLinkHeader is true', () => {
       // eslint-disable-next-line max-len
       const parser = JsonLdParser.fromHttpResponse('BASE', 'application/json', undefined, { ignoreMissingContextLinkHeader: true });
       expect((<any> parser).options.baseIRI).toBe('BASE');
     });
 
-    // eslint-disable-next-line max-len
-    // eslint-disable-next-line max-len
     it('should handle a JSON extension type without link header when ignoreMissingContextLinkHeader is true', () => {
       // eslint-disable-next-line max-len
       const parser = JsonLdParser.fromHttpResponse('BASE', 'text/turtle+json', undefined, { ignoreMissingContextLinkHeader: true });
@@ -252,8 +248,6 @@ describe('JsonLdParser', () => {
       expect(parser.util.dataFactory).toBeTruthy();
     });
 
-    // eslint-disable-next-line max-len
-    // eslint-disable-next-line max-len
     it('should have a default root context', async() => {
       // eslint-disable-next-line max-len
       await expect(parser.parsingContext.rootContext).resolves.toEqual(new JsonLdContextNormalized({ '@base': undefined }));
@@ -1702,8 +1696,7 @@ describe('JsonLdParser', () => {
   "term": {"@list": ["http://example/bar"]}
 }`);
           parser = new JsonLdParser({ dataFactory: DF, streamingProfile, allowSubjectList: false });
-          // eslint-disable-next-line max-len
-          // eslint-disable-next-line max-len
+
           await expect(arrayifyStream(stream.pipe(parser))).rejects
             // eslint-disable-next-line max-len
             .toThrow(new ErrorCoded('Found illegal list value in subject position at term', ERROR_CODES.INVALID_REVERSE_PROPERTY_VALUE));
@@ -5738,8 +5731,7 @@ describe('JsonLdParser', () => {
   "pred1": "http://ex.org/obj1",
   "@type": "Foo"
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'type-scoped context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5843,8 +5835,7 @@ describe('JsonLdParser', () => {
   },
   "@type": "Foo"
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5862,8 +5853,7 @@ describe('JsonLdParser', () => {
   },
   "@type": "Foo"
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5884,8 +5874,7 @@ describe('JsonLdParser', () => {
     }
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5903,8 +5892,7 @@ describe('JsonLdParser', () => {
     }
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'type-scoped context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5925,8 +5913,7 @@ describe('JsonLdParser', () => {
     }
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5944,8 +5931,7 @@ describe('JsonLdParser', () => {
     }
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5966,8 +5952,7 @@ describe('JsonLdParser', () => {
   },
   "pred1": "http://ex.org/obj1"
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -5985,8 +5970,7 @@ describe('JsonLdParser', () => {
   },
   "pred1": "http://ex.org/obj1"
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -6011,8 +5995,7 @@ describe('JsonLdParser', () => {
     "@type": "Type"
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(new ErrorCoded('Found an out-of-order ' +
               // eslint-disable-next-line max-len
               'type-scoped context, while streaming is enabled.(disable `streamingProfile`)', ERROR_CODES.INVALID_STREAMING_KEY_ORDER));
@@ -6581,8 +6564,7 @@ describe('JsonLdParser', () => {
   "@id": "http://ex.org/myid",
   "a": "http://ex.org/bla",
 }`);
-          // eslint-disable-next-line max-len
-          // eslint-disable-next-line max-len
+
           await expect(arrayifyStream(stream.pipe(parser))).rejects
             // eslint-disable-next-line max-len
             .toThrow(new ErrorCoded('Invalid @reverse value, must be absolute IRI or blank node: \'@type\'', ERROR_CODES.INVALID_IRI_MAPPING));
@@ -7602,8 +7584,7 @@ describe('JsonLdParser', () => {
     }
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(
               // eslint-disable-next-line max-len
               new ErrorCoded('Keywords can not be used as @index value, got: @keyword', ERROR_CODES.INVALID_TERM_DEFINITION),
@@ -7711,8 +7692,7 @@ describe('JsonLdParser', () => {
     "Value1": "ex:id1"
   }
 }`);
-            // eslint-disable-next-line max-len
-            // eslint-disable-next-line max-len
+
             await expect(arrayifyStream(stream.pipe(parser))).rejects.toThrow(
               // eslint-disable-next-line max-len
               new ErrorCoded('A context @type must be an absolute IRI, found: \'p\': \'@bla\'', ERROR_CODES.INVALID_TYPE_MAPPING),
@@ -12164,8 +12144,7 @@ describe('JsonLdParser', () => {
   "@id": "http://example/foo",
   "term": {"@list": ["http://example/bar"]}
 }`);
-        // eslint-disable-next-line max-len
-        // eslint-disable-next-line max-len
+
         await expect(arrayifyStream(stream.pipe(parser))).rejects
           // eslint-disable-next-line max-len
           .toThrow(new ErrorCoded('Found illegal list value in subject position at term', ERROR_CODES.INVALID_REVERSE_PROPERTY_VALUE));
@@ -12179,8 +12158,7 @@ describe('JsonLdParser', () => {
   "@id": "http://example/foo",
   "term": {"@list": "http://example/bar"}
 }`);
-        // eslint-disable-next-line max-len
-        // eslint-disable-next-line max-len
+
         await expect(arrayifyStream(stream.pipe(parser))).rejects
           // eslint-disable-next-line max-len
           .toThrow(new ErrorCoded('Found illegal list value in subject position at term', ERROR_CODES.INVALID_REVERSE_PROPERTY_VALUE));
@@ -12194,8 +12172,7 @@ describe('JsonLdParser', () => {
   "@id": "http://example/foo",
   "term": {"@list": []}
 }`);
-        // eslint-disable-next-line max-len
-        // eslint-disable-next-line max-len
+
         await expect(arrayifyStream(stream.pipe(parser))).rejects
           // eslint-disable-next-line max-len
           .toThrow(new ErrorCoded('Found illegal list value in subject position at term', ERROR_CODES.INVALID_REVERSE_PROPERTY_VALUE));
@@ -12242,8 +12219,7 @@ describe('JsonLdParser', () => {
 {
   "@included": { "@value": "bla" }
 }`);
-        // eslint-disable-next-line max-len
-        // eslint-disable-next-line max-len
+
         await expect(arrayifyStream(stream.pipe(parser))).rejects
           // eslint-disable-next-line max-len
           .toThrow(new ErrorCoded('Found an illegal @included @value node \'{"@value":"bla"}\'', ERROR_CODES.INVALID_INCLUDED_VALUE));
@@ -12254,8 +12230,7 @@ describe('JsonLdParser', () => {
 {
   "@included": { "@list": [ "bla" ] }
 }`);
-        // eslint-disable-next-line max-len
-        // eslint-disable-next-line max-len
+
         await expect(arrayifyStream(stream.pipe(parser))).rejects
           // eslint-disable-next-line max-len
           .toThrow(new ErrorCoded('Found an illegal @included @list node \'{"@list":["bla"]}\'', ERROR_CODES.INVALID_INCLUDED_VALUE));
@@ -12353,8 +12328,7 @@ describe('JsonLdParser', () => {
     "http://xmlns.com/foaf/0.1/knows": "Name"
   }
 }`);
-      // eslint-disable-next-line max-len
-      // eslint-disable-next-line max-len
+
       await expect(arrayifyStream(stream.pipe(parser))).rejects
         // eslint-disable-next-line max-len
         .toEqual(new ErrorCoded('Found illegal literal in subject position: Name', ERROR_CODES.INVALID_REVERSE_PROPERTY_VALUE));

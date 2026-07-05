@@ -185,6 +185,20 @@ export class Util {
   }
 
   /**
+   * Check if the given value is a Promise (or thenable).
+   *
+   * This is used on hot paths to distinguish synchronously-available results
+   * from asynchronous ones, so that the Promise machinery (allocation and
+   * microtask scheduling) is only paid for when actually needed.
+   *
+   * @param value A value that is either a result or a Promise of a result.
+   * @return {boolean} If the given value is a Promise.
+   */
+  public static isPromise<T>(value: T | Promise<T>): value is Promise<T> {
+    return Boolean(value) && typeof (<Promise<T>>value).then === 'function';
+  }
+
+  /**
    * Check if the given first array (needle) is a prefix of the given second array (haystack).
    * @param needle An array to check if it is a prefix.
    * @param haystack An array to look in.
@@ -808,9 +822,30 @@ export class Util {
     disableCache?: boolean,
     context?: JsonLdContextNormalized,
   ): Promise<any> {
+    // eslint-disable-next-line ts/no-unsafe-return
+    return this.unaliasKeywordFast(key, keys, depth, disableCache, context);
+  }
+
+  /**
+   * Variant of {@link Util#unaliasKeyword} that avoids Promise overhead when possible:
+   * the result is returned directly (not wrapped in a Promise)
+   * whenever it can be determined synchronously,
+   * and a Promise is only returned when an asynchronous context lookup is unavoidable.
+   *
+   * Since keys can never be thenables,
+   * callers can safely distinguish the two cases with {@link Util.isPromise}.
+   *
+   * @see Util#unaliasKeyword
+   */
+  public unaliasKeywordFast(
+    key: any,
+    keys: string[],
+    depth: number,
+    disableCache?: boolean,
+    context?: JsonLdContextNormalized,
+  ): any {
     // Numbers can not be an alias
     if (Number.isInteger(key)) {
-      // eslint-disable-next-line ts/no-unsafe-return
       return key;
     }
 
@@ -819,26 +854,47 @@ export class Util {
       // eslint-disable-next-line ts/no-unsafe-assignment
       const cachedUnaliasedKeyword = this.parsingContext.unaliasedKeywordCacheStack[depth];
       if (cachedUnaliasedKeyword) {
-        // eslint-disable-next-line ts/no-unsafe-return
         return cachedUnaliasedKeyword;
       }
     }
 
     if (!ContextUtil.isPotentialKeyword(key)) {
-      context = context ?? await this.parsingContext.getContext(keys);
-      // eslint-disable-next-line ts/no-unsafe-assignment
-      let unliased = context.getContextRaw()[key];
-      if (unliased && typeof unliased === 'object') {
-        // eslint-disable-next-line ts/no-unsafe-assignment
-        unliased = unliased['@id'];
+      context = context ?? this.parsingContext.tryGetContext(keys) ?? undefined;
+      if (!context) {
+        return this.parsingContext.getContext(keys)
+          // eslint-disable-next-line ts/no-unsafe-return
+          .then(asyncContext => this.unaliasKeywordWithContext(key, asyncContext, depth, disableCache));
       }
-      if (ContextUtil.isValidKeyword(unliased)) {
-        // eslint-disable-next-line ts/no-unsafe-assignment
-        key = unliased;
-      }
+
+      return this.unaliasKeywordWithContext(key, context, depth, disableCache);
     }
 
-    // eslint-disable-next-line ts/no-unsafe-return, ts/no-unsafe-assignment
+    // eslint-disable-next-line ts/no-unsafe-assignment
+    return disableCache ? key : (this.parsingContext.unaliasedKeywordCacheStack[depth] = key);
+  }
+
+  /**
+   * Un-alias the given key against the given context.
+   * This is the synchronous tail of {@link Util#unaliasKeywordFast}.
+   */
+  private unaliasKeywordWithContext(
+    key: any,
+    context: JsonLdContextNormalized,
+    depth: number,
+    disableCache?: boolean,
+  ): any {
+    // eslint-disable-next-line ts/no-unsafe-assignment
+    let unliased = context.getContextRaw()[key];
+    if (unliased && typeof unliased === 'object') {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      unliased = unliased['@id'];
+    }
+    if (ContextUtil.isValidKeyword(unliased)) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      key = unliased;
+    }
+
+    // eslint-disable-next-line ts/no-unsafe-assignment
     return disableCache ? key : (this.parsingContext.unaliasedKeywordCacheStack[depth] = key);
   }
 
@@ -850,8 +906,18 @@ export class Util {
    * @return {Promise<any>} A promise resolving to the parent key, or another key.
    */
   public async unaliasKeywordParent(keys: any[], depth: number): Promise<any> {
-    // eslint-disable-next-line ts/no-unsafe-return, ts/no-unsafe-argument
-    return await this.unaliasKeyword(depth > 0 && keys[depth - 1], keys, depth - 1);
+    // eslint-disable-next-line ts/no-unsafe-return
+    return this.unaliasKeywordParentFast(keys, depth);
+  }
+
+  /**
+   * Variant of {@link Util#unaliasKeywordParent} that avoids Promise overhead when possible,
+   * analogous to {@link Util#unaliasKeywordFast}.
+   * @see Util#unaliasKeywordParent
+   */
+  public unaliasKeywordParentFast(keys: any[], depth: number): any {
+    // eslint-disable-next-line ts/no-unsafe-argument
+    return this.unaliasKeywordFast(depth > 0 && keys[depth - 1], keys, depth - 1);
   }
 
   /**
@@ -872,7 +938,13 @@ export class Util {
     const newHash: Record<string, any> = {};
     for (const key in hash) {
       // eslint-disable-next-line ts/no-unsafe-assignment
-      newHash[await this.unaliasKeyword(key, keys, depth + 1, true, context)] = hash[key];
+      let unaliasedKey = this.unaliasKeywordFast(key, keys, depth + 1, true, context);
+      if (Util.isPromise(unaliasedKey)) {
+        // eslint-disable-next-line ts/no-unsafe-assignment
+        unaliasedKey = await unaliasedKey;
+      }
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      newHash[unaliasedKey] = hash[key];
     }
     return newHash;
   }
@@ -887,7 +959,47 @@ export class Util {
    * @return {boolean} If we are processing a literal.
    */
   public async isLiteral(keys: any[], depth: number): Promise<boolean> {
+    return this.isLiteralFast(keys, depth);
+  }
+
+  /**
+   * Variant of {@link Util#isLiteral} that avoids Promise overhead when possible:
+   * a boolean is returned directly whenever it can be determined synchronously,
+   * and a Promise is only returned when an asynchronous context lookup is unavoidable.
+   * @see Util#isLiteral
+   */
+  public isLiteralFast(keys: any[], depth: number): boolean | Promise<boolean> {
     for (let i = depth; i >= 0; i--) {
+      // eslint-disable-next-line ts/no-unsafe-assignment, ts/no-unsafe-argument
+      const key = this.unaliasKeywordFast(keys[i], keys, i);
+      if (Util.isPromise(key)) {
+        // Continue asynchronously from the current level.
+        return this.isLiteralAsyncFrom(key, keys, i);
+      }
+      if (key === '@annotation') {
+        // Literals may have annotations, which require processing of inner nodes.
+        return false;
+      }
+      if (this.parsingContext.literalStack[i] || this.parsingContext.jsonLiteralStack[i]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The asynchronous continuation of {@link Util#isLiteralFast},
+   * starting at level `i` for which the unaliased key promise is given.
+   */
+  private async isLiteralAsyncFrom(pendingKey: Promise<any>, keys: any[], i: number): Promise<boolean> {
+    if (await pendingKey === '@annotation') {
+      // Literals may have annotations, which require processing of inner nodes.
+      return false;
+    }
+    if (this.parsingContext.literalStack[i] || this.parsingContext.jsonLiteralStack[i]) {
+      return true;
+    }
+    for (i--; i >= 0; i--) {
       // eslint-disable-next-line ts/no-unsafe-argument
       if (await this.unaliasKeyword(keys[i], keys, i) === '@annotation') {
         // Literals may have annotations, which require processing of inner nodes.
@@ -909,8 +1021,13 @@ export class Util {
    */
   public async getDepthOffsetGraph(depth: number, keys: any[]): Promise<number> {
     for (let i = depth - 1; i > 0; i--) {
-      // eslint-disable-next-line ts/no-unsafe-argument
-      if (await this.unaliasKeyword(keys[i], keys, i) === '@graph') {
+      // eslint-disable-next-line ts/no-unsafe-assignment, ts/no-unsafe-argument
+      let key = this.unaliasKeywordFast(keys[i], keys, i);
+      if (Util.isPromise(key)) {
+        // eslint-disable-next-line ts/no-unsafe-assignment
+        key = await key;
+      }
+      if (key === '@graph') {
         // Skip further processing if we are already in an @graph-@id or @graph-@index container
         const containers = (await EntryHandlerContainer.getContainerHandler(this.parsingContext, keys, i)).containers;
         if (EntryHandlerContainer.isComplexGraphContainer(containers)) {
@@ -956,8 +1073,11 @@ export class Util {
     let graph: RDF.NamedNode | RDF.BlankNode | RDF.DefaultGraph | null = this.getDefaultGraph();
 
     // Check if we are in an @container: @graph.
-    const { containers, depth: depthContainer } = await EntryHandlerContainer
-      .getContainerHandler(this.parsingContext, keys, depth);
+    let containerHandler = EntryHandlerContainer.getContainerHandler(this.parsingContext, keys, depth);
+    if (Util.isPromise(containerHandler)) {
+      containerHandler = await containerHandler;
+    }
+    const { containers, depth: depthContainer } = containerHandler;
     if ('@graph' in containers) {
       // Get the graph from the stack.
       const graphContainerIndex = EntryHandlerContainer.getContainerGraphIndex(containers, depthContainer, keys);
@@ -1008,7 +1128,11 @@ export class Util {
       // Skip array keys
       if (typeof keys[i] !== 'number') {
         // eslint-disable-next-line ts/no-unsafe-argument, ts/no-unsafe-assignment
-        const parentKey = await this.unaliasKeyword(keys[i], keys, i);
+        let parentKey = this.unaliasKeywordFast(keys[i], keys, i);
+        if (Util.isPromise(parentKey)) {
+          // eslint-disable-next-line ts/no-unsafe-assignment
+          parentKey = await parentKey;
+        }
         if (parentKey === '@reverse') {
           return i;
         }

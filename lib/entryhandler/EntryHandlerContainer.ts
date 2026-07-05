@@ -1,3 +1,4 @@
+import type { JsonLdContextNormalized } from 'jsonld-context-parser';
 import { ContainerHandlerIdentifier } from '../containerhandler/ContainerHandlerIdentifier';
 import { ContainerHandlerIndex } from '../containerhandler/ContainerHandlerIndex';
 import { ContainerHandlerLanguage } from '../containerhandler/ContainerHandlerLanguage';
@@ -79,11 +80,29 @@ export class EntryHandlerContainer implements IEntryHandler<{
    *          and the `fallback` flag that indicates if the default container type was returned
    *            (i.e., no dedicated container type is defined).
    */
-  public static async getContainerHandler(
+  public static getContainerHandler(
     parsingContext: ParsingContext,
     keys: any[],
     depth: number,
-  ): Promise<{ containers: Record<string, boolean>; depth: number; fallback: boolean }> {
+  ): { containers: Record<string, boolean>; depth: number; fallback: boolean } |
+    Promise<{ containers: Record<string, boolean>; depth: number; fallback: boolean }> {
+    // Determine the context, synchronously if possible, to avoid Promise overhead on a hot path.
+    const contextSync = parsingContext.tryGetContext(keys, 2);
+    if (!contextSync) {
+      return parsingContext.getContext(keys, 2)
+        .then(context => EntryHandlerContainer.getContainerHandlerWithContext(context, keys, depth));
+    }
+    return EntryHandlerContainer.getContainerHandlerWithContext(contextSync, keys, depth);
+  }
+
+  /**
+   * The synchronous tail of {@link EntryHandlerContainer#getContainerHandler}.
+   */
+  private static getContainerHandlerWithContext(
+    context: JsonLdContextNormalized,
+    keys: any[],
+    depth: number,
+  ): { containers: Record<string, boolean>; depth: number; fallback: boolean } {
     const fallback = {
       containers: { '@set': true },
       depth,
@@ -94,7 +113,6 @@ export class EntryHandlerContainer implements IEntryHandler<{
     let checkGraphContainer = false;
 
     // Iterate from deeper to higher
-    const context = await parsingContext.getContext(keys, 2);
     for (let i = depth - 1; i >= 0; i--) {
       // Skip array keys
       if (typeof keys[i] !== 'number') {
@@ -173,9 +191,12 @@ export class EntryHandlerContainer implements IEntryHandler<{
    * @param {number} depth The current depth.
    * @return {Promise<boolean>} If we are in the scope of a container handler.
    */
-  public static async isBufferableContainerHandler(parsingContext: ParsingContext, keys: any[], depth: number):
-  Promise<boolean> {
-    const handler = await EntryHandlerContainer.getContainerHandler(parsingContext, keys, depth);
+  public static isBufferableContainerHandler(parsingContext: ParsingContext, keys: any[], depth: number):
+  boolean | Promise<boolean> {
+    const handler = EntryHandlerContainer.getContainerHandler(parsingContext, keys, depth);
+    if (Util.isPromise(handler)) {
+      return handler.then(handlerValue => !handlerValue.fallback && !('@graph' in handlerValue.containers));
+    }
     return !handler.fallback && !('@graph' in handler.containers);
   }
 
@@ -187,24 +208,46 @@ export class EntryHandlerContainer implements IEntryHandler<{
     return true;
   }
 
-  public async validate(
+  public validate(
     parsingContext: ParsingContext,
     util: Util,
     keys: any[],
     depth: number,
     _inProperty: boolean,
-  ): Promise<boolean> {
-    return Boolean(await this.test(parsingContext, util, null, keys, depth));
+  ): boolean | Promise<boolean> {
+    const testResult = this.test(parsingContext, util, null, keys, depth);
+    if (Util.isPromise(testResult)) {
+      return testResult.then(Boolean);
+    }
+    return Boolean(testResult);
   }
 
-  public async test(
+  public test(
     parsingContext: ParsingContext,
     _util: Util,
     _key: any,
     keys: any[],
     depth: number,
-  ): Promise<{ containers: Record<string, boolean>; handler: IContainerHandler } | null> {
-    const containers = Util.getContextValueContainer(await parsingContext.getContext(keys, 2), <string>keys[depth - 1]);
+  ): { containers: Record<string, boolean>; handler: IContainerHandler } | null |
+    Promise<{ containers: Record<string, boolean>; handler: IContainerHandler } | null> {
+    // Determine the context, synchronously if possible, to avoid Promise overhead on a hot path.
+    const contextSync = parsingContext.tryGetContext(keys, 2);
+    if (!contextSync) {
+      return parsingContext.getContext(keys, 2)
+        .then(context => EntryHandlerContainer.testWithContext(context, keys, depth));
+    }
+    return EntryHandlerContainer.testWithContext(contextSync, keys, depth);
+  }
+
+  /**
+   * The synchronous tail of {@link EntryHandlerContainer#test}.
+   */
+  private static testWithContext(
+    context: JsonLdContextNormalized,
+    keys: any[],
+    depth: number,
+  ): { containers: Record<string, boolean>; handler: IContainerHandler } | null {
+    const containers = Util.getContextValueContainer(context, <string>keys[depth - 1]);
     for (const containerName in EntryHandlerContainer.CONTAINER_HANDLERS) {
       if (containers[containerName]) {
         return {

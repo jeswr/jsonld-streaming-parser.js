@@ -16,23 +16,23 @@ export class EntryHandlerArrayValue implements IEntryHandler<boolean> {
     return true;
   }
 
-  public async validate(
+  public validate(
     parsingContext: ParsingContext,
     util: Util,
     keys: any[],
     depth: number,
     _inProperty: boolean,
-  ): Promise<boolean> {
+  ): boolean {
     return this.test(parsingContext, util, null, keys, depth);
   }
 
-  public async test(
+  public test(
     _parsingContext: ParsingContext,
     _util: Util,
     _key: any,
     keys: any[],
     depth: number,
-  ): Promise<boolean> {
+  ): boolean {
     return typeof keys[depth] === 'number';
   }
 
@@ -45,7 +45,11 @@ export class EntryHandlerArrayValue implements IEntryHandler<boolean> {
     depth: number,
   ): Promise<any> {
     // eslint-disable-next-line ts/no-unsafe-assignment
-    let parentKey = await util.unaliasKeywordParent(keys, depth);
+    let parentKey = util.unaliasKeywordParentFast(keys, depth);
+    if (Util.isPromise(parentKey)) {
+      // eslint-disable-next-line ts/no-unsafe-assignment
+      parentKey = await parentKey;
+    }
 
     // Check if we have an anonymous list
     if (parentKey === '@list') {
@@ -67,7 +71,7 @@ export class EntryHandlerArrayValue implements IEntryHandler<boolean> {
       if (listRootKey !== null) {
         // Emit the given objects as list elements
 
-        const listContext = await parsingContext.getContext(keys);
+        const listContext = parsingContext.tryGetContext(keys) ?? await parsingContext.getContext(keys);
         const values = await util.valueToTerm(listContext, <string> listRootKey, value, depth, <string[]>keys);
         for (const object of values) {
           await this.handleListElement(
@@ -106,13 +110,19 @@ listRootDepth,
       for (let i = depth - 1; i > 0; i--) {
         if (typeof keys[i] !== 'number') {
           // eslint-disable-next-line ts/no-unsafe-assignment
-          parentKey = await util.unaliasKeyword(<string>keys[i], <string[]>keys, i);
+          parentKey = util.unaliasKeywordFast(<string>keys[i], <string[]>keys, i);
+          if (Util.isPromise(parentKey)) {
+            // eslint-disable-next-line ts/no-unsafe-assignment
+            parentKey = await parentKey;
+          }
           break;
         }
       }
 
       // Check if the predicate is marked as an @list in the context
-      const parentContext = await parsingContext.getContext(keys.slice(0, -1));
+      const parentKeysSliced = keys.slice(0, -1);
+      const parentContext = parsingContext.tryGetContext(parentKeysSliced) ??
+        await parsingContext.getContext(parentKeysSliced);
       // eslint-disable-next-line ts/no-unsafe-argument
       if ('@list' in Util.getContextValueContainer(parentContext, parentKey)) {
         // Our value is part of an array
